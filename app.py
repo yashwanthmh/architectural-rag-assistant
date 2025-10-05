@@ -1,0 +1,170 @@
+import os
+import glob
+import streamlit as st
+from pathlib import Path
+
+# LangChain + Vector store
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import SentenceTransformerEmbeddings
+from langchain_openai import ChatOpenAI
+from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
+
+# ---- Config ----
+ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = ROOT / "data" / "raw"
+INDEX_DIR = ROOT / "data" / "index"
+
+st.set_page_config(page_title="Architectural RAG Assistant", page_icon="🏗️", layout="wide")
+st.title("🏗️ Architectural RAG Assistant")
+st.caption("Prototype: Generative AI + Retrieval for sustainable design knowledge")
+
+# Secrets / env
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
+
+# ---- Helpers ----
+def load_and_chunk_pdfs(pdf_paths):
+    docs = []
+    for p in pdf_paths:
+        try:
+            loader = PyPDFLoader(str(p))
+            pdf_docs = loader.load()
+            docs.extend(pdf_docs)
+        except Exception as e:
+            st.warning(f"Failed to parse {p.name}: {e}")
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1200, chunk_overlap=200,
+        separators=["\n\n", "\n", " ", ""]
+    )
+    chunks = splitter.split_documents(docs)
+    # enrich metadata minimally
+    for c in chunks:
+        c.metadata.setdefault("source", c.metadata.get("source", ""))
+        c.metadata.setdefault("page", c.metadata.get("page", -1))
+    return chunks
+
+def ensure_index():
+    INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    pdfs = list(DATA_DIR.glob("*.pdf"))
+    if not pdfs:
+        st.info("➕ Drop 3–5 public PDFs into `data/raw/` and press **Rebuild Index**.")
+    # Use SentenceTransformer locally for speed & no API cost
+    embed = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+
+    if not any(INDEX_DIR.iterdir()):
+        # First build
+        with st.spinner("Building vector index…"):
+            chunks = load_and_chunk_pdfs(pdfs)
+            Chroma.from_documents(chunks, embed, persist_directory=str(INDEX_DIR))
+    else:
+        # Index exists; no-op
+        pass
+
+def rebuild_index():
+    # Clear and rebuild
+    for item in INDEX_DIR.glob("*"):
+        if item.is_file():
+            item.unlink()
+        else:
+            import shutil
+            shutil.rmtree(item)
+    ensure_index()
+
+def get_retriever():
+    embed = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+    vs = Chroma(persist_directory=str(INDEX_DIR), embedding_function=embed)
+    return vs.as_retriever(search_kwargs={"k": 5})
+
+# ---- Sidebar ----
+st.sidebar.header("Dataset & Index")
+st.sidebar.write(f"Data folder: `{DATA_DIR}`")
+if st.sidebar.button("🔁 Rebuild Index"):
+    rebuild_index()
+    st.sidebar.success("Index rebuilt.")
+
+ensure_index()
+
+with st.sidebar.expander("Example queries"):
+    st.write("- Precedents for low-embodied carbon retrofit")
+    st.write("- Daylight strategies with pros/cons")
+    st.write("- Facade materials meeting fire-safety guidance")
+
+# ---- Main QA UI ----
+user_q = st.text_input("Ask a question about sustainable design / architecture docs:", "")
+colA, colB = st.columns([2,1])
+
+with colB:
+    st.subheader("Settings")
+    temperature = st.slider("Creativity", 0.0, 1.0, 0.0, 0.1)
+    model_name = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"])
+
+# Guard: require key for LLM
+if not OPENAI_API_KEY:
+    st.warning("Set your `OPENAI_API_KEY` in Streamlit Secrets or environment to enable answers. Retrieval still works (sources shown).")
+
+# Build chain lazily
+retriever = get_retriever()
+
+prompt_tpl = """
+You are an assistant for architects. Answer ONLY from the provided context.
+Cite sources inline like (Title p.X) or (Filename p.X). If the context is insufficient, say so and suggest a better query.
+
+Question: {question}
+
+Context:
+{context}
+
+Answer:
+"""
+prompt = PromptTemplate.from_template(prompt_tpl)
+
+def run_rag(query: str):
+    # Build a QA chain that returns sources
+    llm = ChatOpenAI(model=model_name, temperature=temperature, openai_api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+    # Manual compose: retrieve -> stuff -> call model
+    docs = retriever.get_relevant_documents(query)
+    if not docs:
+        return "I couldn't find relevant context in the current dataset. Try another query or add more PDFs.", []
+
+    context_blocks = []
+    for d in docs:
+        src = d.metadata.get("source", "")
+        page = d.metadata.get("page", "")
+        label = f"{Path(src).name if src else 'doc'} p.{page}"
+        context_blocks.append(f"[{label}] {d.page_content[:1200]}")
+
+    filled = prompt.format(question=query, context="\n\n".join(context_blocks))
+    if llm:
+        resp = llm.invoke(filled)
+        answer = resp.content
+    else:
+        # No LLM: show top snippets as a fallback
+        answer = "LLM is disabled (no API key). Showing top retrieved snippets from your documents:\n\n" + "\n\n---\n\n".join(context_blocks[:3])
+
+    return answer, docs
+
+if st.button("Ask") or user_q.strip():
+    q = user_q.strip() or "Precedents for low-embodied carbon retrofit"
+    with st.spinner("Thinking…"):
+        answer, docs = run_rag(q)
+    with colA:
+        st.subheader("Answer")
+        st.write(answer)
+        st.divider()
+        st.subheader("Citations / Sources")
+        for i, d in enumerate(docs, 1):
+            src = d.metadata.get("source", "")
+            page = d.metadata.get("page", "")
+            st.markdown(f"**{i}.** `{Path(src).name}` — page **{page}**")
+        st.divider()
+        with st.expander("Show retrieved context"):
+            for i, d in enumerate(docs, 1):
+                st.markdown(f"**Chunk {i}** — `{Path(d.metadata.get('source','')).name}` p.{d.metadata.get('page','')}")
+                st.write(d.page_content[:1500])
+                st.write("---")
+else:
+    st.info("Type a question above and press **Ask**. Add PDFs to `data/raw/` for better results.")
