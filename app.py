@@ -15,8 +15,7 @@ from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 
-# ---- Config ----from pathlib import Path
-import streamlit as st
+
 
 # Resolve likely base directories so it works whether app.py is at repo root or in /app
 APP_DIR = Path(__file__).resolve().parent
@@ -32,8 +31,8 @@ BASE_DIR = find_base_dir()
 DATA_DIR = BASE_DIR / "data" / "raw"
 INDEX_DIR = BASE_DIR / "data" / "index"
 
-st.sidebar.write(f"🔎 Using data dir: `{DATA_DIR}`")
 st.set_page_config(page_title="Architectural RAG Assistant", page_icon="🏗️", layout="wide")
+st.sidebar.write(f"🔎 Using data dir: `{DATA_DIR}`")
 st.title("🏗️ Architectural RAG Assistant")
 st.caption("Prototype: Generative AI + Retrieval for sustainable design knowledge")
 
@@ -157,7 +156,7 @@ def get_retriever():
         st.warning("Index not built yet. Add PDFs to `data/raw/` and click **Rebuild Index**.")
         return None
     embed = make_embedder()
-    vs = Chroma(persist_directory=str(INDEX_DIR), embedding_function=embedder)
+    vs = Chroma(collection_name="docs", persist_directory=str(INDEX_DIR), embedding_function=embed)
     return vs.as_retriever(search_kwargs={"k": 5})
 
 
@@ -253,6 +252,7 @@ if st.button("Ask") or user_q.strip():
                 st.write("---")
 else:
     st.info("Type a question above and press **Ask**. Add PDFs to `data/raw/` for better results.")
+
 
 
 
