@@ -79,9 +79,13 @@ def rebuild_index():
     ensure_index()
 
 def get_retriever():
-    embed = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+    if not INDEX_DIR.exists() or not any(INDEX_DIR.iterdir()):
+        st.warning("Index not built yet. Add PDFs to `data/raw/` and click **Rebuild Index**.")
+        return None
+    embed = OpenAIEmbeddings()
     vs = Chroma(persist_directory=str(INDEX_DIR), embedding_function=embed)
     return vs.as_retriever(search_kwargs={"k": 5})
+
 
 # ---- Sidebar ----
 st.sidebar.header("Dataset & Index")
@@ -173,4 +177,5 @@ if st.button("Ask") or user_q.strip():
                 st.write("---")
 else:
     st.info("Type a question above and press **Ask**. Add PDFs to `data/raw/` for better results.")
+
 
