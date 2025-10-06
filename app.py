@@ -13,11 +13,24 @@ from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 
-# ---- Config ----
-ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT / "data" / "raw"
-INDEX_DIR = ROOT / "data" / "index"
+# ---- Config ----from pathlib import Path
+import streamlit as st
 
+# Resolve likely base directories so it works whether app.py is at repo root or in /app
+APP_DIR = Path(__file__).resolve().parent
+CWD = Path.cwd()
+
+def find_base_dir():
+    for base in [APP_DIR, APP_DIR.parent, CWD]:
+        if (base / "data" / "raw").exists():
+            return base
+    return APP_DIR  # fallback
+
+BASE_DIR = find_base_dir()
+DATA_DIR = BASE_DIR / "data" / "raw"
+INDEX_DIR = BASE_DIR / "data" / "index"
+
+st.sidebar.write(f"🔎 Using data dir: `{DATA_DIR}`")
 st.set_page_config(page_title="Architectural RAG Assistant", page_icon="🏗️", layout="wide")
 st.title("🏗️ Architectural RAG Assistant")
 st.caption("Prototype: Generative AI + Retrieval for sustainable design knowledge")
@@ -50,6 +63,7 @@ def load_and_chunk_pdfs(pdf_paths):
 def ensure_index():
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     pdfs = list(DATA_DIR.glob("*.pdf"))
+    st.sidebar.write(f"📚 Found PDFs: {[p.name for p in pdfs]}")
     if not pdfs:
         st.info("➕ No PDFs found. Add 3–5 public PDFs to `data/raw/` and click **Rebuild Index**.")
         return
@@ -177,5 +191,6 @@ if st.button("Ask") or user_q.strip():
                 st.write("---")
 else:
     st.info("Type a question above and press **Ask**. Add PDFs to `data/raw/` for better results.")
+
 
 
