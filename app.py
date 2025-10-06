@@ -7,7 +7,8 @@ from pathlib import Path
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import SentenceTransformerEmbeddings
+from langchain_openai import OpenAIEmbeddings
+embed = OpenAIEmbeddings()
 from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
@@ -50,18 +51,22 @@ def ensure_index():
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     pdfs = list(DATA_DIR.glob("*.pdf"))
     if not pdfs:
-        st.info("➕ Drop 3–5 public PDFs into `data/raw/` and press **Rebuild Index**.")
-    # Use SentenceTransformer locally for speed & no API cost
-    embed = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+        st.info("➕ No PDFs found. Add 3–5 public PDFs to `data/raw/` and click **Rebuild Index**.")
+        return
 
-    if not any(INDEX_DIR.iterdir()):
-        # First build
-        with st.spinner("Building vector index…"):
-            chunks = load_and_chunk_pdfs(pdfs)
-            Chroma.from_documents(chunks, embed, persist_directory=str(INDEX_DIR))
-    else:
-        # Index exists; no-op
-        pass
+    chunks = load_and_chunk_pdfs(pdfs)
+    if not chunks:
+        st.warning("Parsed 0 chunks. Check your PDFs (avoid scanned/image-only docs).")
+        return
+
+    embed = OpenAIEmbeddings()
+
+    with st.spinner("Building vector index…"):
+        # clear stale index if empty build was attempted before
+        if any(INDEX_DIR.iterdir()):
+            pass
+        Chroma.from_documents(chunks, embed, persist_directory=str(INDEX_DIR))
+
 
 def rebuild_index():
     # Clear and rebuild
@@ -168,3 +173,4 @@ if st.button("Ask") or user_q.strip():
                 st.write("---")
 else:
     st.info("Type a question above and press **Ask**. Add PDFs to `data/raw/` for better results.")
+
