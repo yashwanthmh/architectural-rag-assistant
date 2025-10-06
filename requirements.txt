@@ -2,7 +2,8 @@ streamlit
 langchain
 langchain-community
 langchain-openai
+openai
 chromadb
-sentence-transformers
+pypdf
 pdfminer.six
 tiktoken
