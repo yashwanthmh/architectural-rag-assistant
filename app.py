@@ -2,13 +2,13 @@ import os
 import glob
 import streamlit as st
 from pathlib import Path
+from functools import lru_cache
 
 # LangChain + Vector store
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings
-embed = OpenAIEmbeddings()
 from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
@@ -44,24 +44,49 @@ def load_and_chunk_pdfs(pdf_paths):
     for p in pdf_paths:
         try:
             loader = PyPDFLoader(str(p))
+            # OPTIONAL: limit long PDFs to first N pages to avoid huge indexes
+            # pages = loader.load_and_split()[:25]  # or leave default
             pdf_docs = loader.load()
             docs.extend(pdf_docs)
         except Exception as e:
             st.warning(f"Failed to parse {p.name}: {e}")
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1200, chunk_overlap=200,
+        chunk_size=1800,   # larger chunks => fewer chunks
+        chunk_overlap=200,
         separators=["\n\n", "\n", " ", ""]
     )
     chunks = splitter.split_documents(docs)
-    # enrich metadata minimally
+
+    # Hard cap to avoid rate limits on first build
+    MAX_CHUNKS = 250
+    if len(chunks) > MAX_CHUNKS:
+        st.warning(f"Corpus is large ({len(chunks)} chunks). Indexing first {MAX_CHUNKS} chunks to avoid rate limits.")
+        chunks = chunks[:MAX_CHUNKS]
+
     for c in chunks:
         c.metadata.setdefault("source", c.metadata.get("source", ""))
         c.metadata.setdefault("page", c.metadata.get("page", -1))
     return chunks
 
+def make_embedder():
+    return OpenAIEmbeddings(
+        model="text-embedding-3-small",  # cheaper + higher rate limits
+        max_retries=8,                   # handle bursts
+        timeout=60                       # seconds
+    )
+
+@st.cache_resource(show_spinner=False)
+def build_chroma_index(chunks, embed, index_dir: str):
+    from langchain_community.vectorstores import Chroma
+    return Chroma.from_documents(chunks, embed, persist_directory=index_dir)
+
+
 def ensure_index():
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    # If index already exists, skip embedding entirely
+    if any(INDEX_DIR.iterdir()):
+        return
     pdfs = list(DATA_DIR.glob("*.pdf"))
     st.sidebar.write(f"📚 Found PDFs: {[p.name for p in pdfs]}")
     if not pdfs:
@@ -73,13 +98,12 @@ def ensure_index():
         st.warning("Parsed 0 chunks. Check your PDFs (avoid scanned/image-only docs).")
         return
 
-    embed = OpenAIEmbeddings()
-
+    embed = make_embedder()
     with st.spinner("Building vector index…"):
         # clear stale index if empty build was attempted before
         if any(INDEX_DIR.iterdir()):
             pass
-        Chroma.from_documents(chunks, embed, persist_directory=str(INDEX_DIR))
+        build_chroma_index(chunks, embed, str(INDEX_DIR))
 
 
 def rebuild_index():
@@ -96,7 +120,7 @@ def get_retriever():
     if not INDEX_DIR.exists() or not any(INDEX_DIR.iterdir()):
         st.warning("Index not built yet. Add PDFs to `data/raw/` and click **Rebuild Index**.")
         return None
-    embed = OpenAIEmbeddings()
+    embed = make_embedder()
     vs = Chroma(persist_directory=str(INDEX_DIR), embedding_function=embed)
     return vs.as_retriever(search_kwargs={"k": 5})
 
@@ -191,6 +215,7 @@ if st.button("Ask") or user_q.strip():
                 st.write("---")
 else:
     st.info("Type a question above and press **Ask**. Add PDFs to `data/raw/` for better results.")
+
 
 
 
