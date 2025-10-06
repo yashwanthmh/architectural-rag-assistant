@@ -190,6 +190,8 @@ if not OPENAI_API_KEY:
 
 # Build chain lazily
 retriever = get_retriever()
+if retriever is None:
+    st.stop()
 
 prompt_tpl = """
 You are an assistant for architects. Answer ONLY from the provided context.
@@ -251,6 +253,7 @@ if st.button("Ask") or user_q.strip():
                 st.write("---")
 else:
     st.info("Type a question above and press **Ask**. Add PDFs to `data/raw/` for better results.")
+
 
 
 
