@@ -3,6 +3,8 @@ import glob
 import streamlit as st
 from pathlib import Path
 from functools import lru_cache
+import time
+from typing import List
 
 # LangChain + Vector store
 from langchain_community.document_loaders import PyPDFLoader
@@ -59,7 +61,7 @@ def load_and_chunk_pdfs(pdf_paths):
     chunks = splitter.split_documents(docs)
 
     # Hard cap to avoid rate limits on first build
-    MAX_CHUNKS = 250
+    MAX_CHUNKS = 120
     if len(chunks) > MAX_CHUNKS:
         st.warning(f"Corpus is large ({len(chunks)} chunks). Indexing first {MAX_CHUNKS} chunks to avoid rate limits.")
         chunks = chunks[:MAX_CHUNKS]
@@ -70,16 +72,54 @@ def load_and_chunk_pdfs(pdf_paths):
     return chunks
 
 def make_embedder():
-    return OpenAIEmbeddings(
-        model="text-embedding-3-small",  # cheaper + higher rate limits
-        max_retries=8,                   # handle bursts
-        timeout=60                       # seconds
-    )
+    # smaller, cheaper, higher limits
+    return OpenAIEmbeddings(model="text-embedding-3-small", max_retries=8, timeout=60)
+
+def batched(iterable, n):
+    for i in range(0, len(iterable), n):
+        yield iterable[i:i+n]
+
+def rate_limited_embed(texts: List[str], embedder: OpenAIEmbeddings, batch_size: int = 32):
+    """
+    Embed texts in small batches with exponential backoff to avoid RateLimitError.
+    """
+    vectors = []
+    pause = 1.0  # start with 1s, will grow on 429
+    for batch in batched(texts, batch_size):
+        while True:
+            try:
+                vecs = embedder.embed_documents(batch)
+                vectors.extend(vecs)
+                # be polite: brief pause between batches
+                time.sleep(0.25)
+                break
+            except Exception as e:
+                msg = str(e).lower()
+                if "rate" in msg or "429" in msg or "limit" in msg:
+                    time.sleep(pause)
+                    pause = min(pause * 1.8, 12.0)  # cap backoff
+                else:
+                    # surface unexpected errors
+                    raise
+    return vectors
 
 @st.cache_resource(show_spinner=False)
-def build_chroma_index(chunks, embed, index_dir: str):
+def build_chroma_index(chunks, index_dir: str):
     from langchain_community.vectorstores import Chroma
-    return Chroma.from_documents(chunks, embed, persist_directory=index_dir)
+
+    texts = [c.page_content for c in chunks]
+    metadatas = [c.metadata for c in chunks]
+    ids = [f"doc-{i}" for i in range(len(chunks))]
+
+    embedder = make_embedder()
+    embs = rate_limited_embed(texts, embedder, batch_size=24)
+
+    # Create (or open) the store *without* an embedding function (we provide embeddings)
+    vs = Chroma(collection_name="docs", persist_directory=index_dir)
+    vs.add_texts(texts=texts, metadatas=metadatas, ids=ids, embeddings=embs)
+    vs.persist()
+    return True
+
 
 
 def ensure_index():
@@ -98,12 +138,8 @@ def ensure_index():
         st.warning("Parsed 0 chunks. Check your PDFs (avoid scanned/image-only docs).")
         return
 
-    embed = make_embedder()
-    with st.spinner("Building vector index…"):
-        # clear stale index if empty build was attempted before
-        if any(INDEX_DIR.iterdir()):
-            pass
-        build_chroma_index(chunks, embed, str(INDEX_DIR))
+    with st.spinner(f"Building vector index… ({len(chunks)} chunks)"):
+        build_chroma_index(chunks, str(INDEX_DIR))
 
 
 def rebuild_index():
@@ -121,7 +157,7 @@ def get_retriever():
         st.warning("Index not built yet. Add PDFs to `data/raw/` and click **Rebuild Index**.")
         return None
     embed = make_embedder()
-    vs = Chroma(persist_directory=str(INDEX_DIR), embedding_function=embed)
+    vs = Chroma(persist_directory=str(INDEX_DIR), embedding_function=embedder)
     return vs.as_retriever(search_kwargs={"k": 5})
 
 
@@ -215,6 +251,7 @@ if st.button("Ask") or user_q.strip():
                 st.write("---")
 else:
     st.info("Type a question above and press **Ask**. Add PDFs to `data/raw/` for better results.")
+
 
 
 
