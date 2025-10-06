@@ -53,7 +53,7 @@ def load_and_chunk_pdfs(pdf_paths):
             st.warning(f"Failed to parse {p.name}: {e}")
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1800,   # larger chunks => fewer chunks
+        chunk_size=2300,   # larger chunks => fewer chunks
         chunk_overlap=200,
         separators=["\n\n", "\n", " ", ""]
     )
@@ -78,29 +78,73 @@ def batched(iterable, n):
     for i in range(0, len(iterable), n):
         yield iterable[i:i+n]
 
-def rate_limited_embed(texts: List[str], embedder: OpenAIEmbeddings, batch_size: int = 32):
+
+def rate_limited_embed(texts: List[str], embedder: OpenAIEmbeddings, batch_size: int = 12):
     """
-    Embed texts in small batches with exponential backoff to avoid RateLimitError.
+    Embed texts with bounded retries, exponential backoff, and a Streamlit progress bar.
+    Prevents infinite loops on persistent 429s.
     """
+    total = len(texts)
     vectors = []
-    pause = 1.0  # start with 1s, will grow on 429
-    for batch in batched(texts, batch_size):
+    pause = 1.0
+    max_pause = 12.0
+    max_retries = 10  # per batch
+    batches = [texts[i:i+batch_size] for i in range(0, total, batch_size)]
+
+    # UI
+    progress = st.progress(0, text="Embedding chunks…")
+    status = st.empty()
+    start = time.time()
+    done_items = 0
+
+    for bi, batch in enumerate(batches, 1):
+        attempts = 0
         while True:
             try:
+                t0 = time.time()
                 vecs = embedder.embed_documents(batch)
+                t1 = time.time()
                 vectors.extend(vecs)
-                # be polite: brief pause between batches
-                time.sleep(0.25)
+
+                done_items += len(batch)
+                elapsed = time.time() - start
+                # crude ETA
+                rate = done_items / max(elapsed, 1e-3)
+                remaining = total - done_items
+                eta_sec = remaining / max(rate, 1e-6)
+
+                progress.progress(min(done_items / total, 0.999))
+                status.write(f"Batch {bi}/{len(batches)} ok in {t1 - t0:.1f}s • "
+                             f"{done_items}/{total} chunks • ETA ~{int(eta_sec)}s")
+                time.sleep(0.15)  # politeness
+                pause = 1.0  # reset after success
                 break
             except Exception as e:
                 msg = str(e).lower()
-                if "rate" in msg or "429" in msg or "limit" in msg:
+                attempts += 1
+                if ("rate" in msg) or ("429" in msg) or ("limit" in msg) or ("temporarily unavailable" in msg):
                     time.sleep(pause)
-                    pause = min(pause * 1.8, 12.0)  # cap backoff
+                    pause = min(pause * 1.8, max_pause)
+                    status.write(f"Rate limited (attempt {attempts}/{max_retries}). Backing off {pause:.1f}s…")
+                    if attempts >= max_retries:
+                        st.warning("Hit max retries on a batch due to rate limits. "
+                                   "Consider lowering batch_size or chunk count.")
+                        # Option A: fail fast
+                        # raise
+                        # Option B: skip remaining (keeps index partial but usable)
+                        break
                 else:
-                    # surface unexpected errors
+                    # Unexpected error: surface it
                     raise
+
+        # Optional: early stop if too many failures (keep partial index usable)
+        if attempts >= max_retries:
+            break
+
+    progress.progress(1.0)
+    status.write("Embedding complete.")
     return vectors
+
 
 @st.cache_resource(show_spinner=False)
 def build_chroma_index(chunks, index_dir: str):
@@ -252,6 +296,7 @@ if st.button("Ask") or user_q.strip():
                 st.write("---")
 else:
     st.info("Type a question above and press **Ask**. Add PDFs to `data/raw/` for better results.")
+
 
 
 
