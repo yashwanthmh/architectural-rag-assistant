@@ -55,13 +55,13 @@ def load_and_chunk_pdfs(pdf_paths):
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=3200,   # larger chunks => fewer chunks
-        chunk_overlap=150,
+        chunk_overlap=120,
         separators=["\n\n", "\n", " ", ""]
     )
     chunks = splitter.split_documents(docs)
 
     # Hard cap to avoid rate limits on first build
-    MAX_CHUNKS = 80
+    MAX_CHUNKS = 40
     if len(chunks) > MAX_CHUNKS:
         st.warning(f"Corpus is large ({len(chunks)} chunks). Indexing first {MAX_CHUNKS} chunks to avoid rate limits.")
         chunks = chunks[:MAX_CHUNKS]
@@ -288,6 +288,7 @@ if st.button("Ask") or user_q.strip():
                 st.write("---")
 else:
     st.info("Type a question above and press **Ask**. Add PDFs to `data/raw/` for better results.")
+
 
 
 
