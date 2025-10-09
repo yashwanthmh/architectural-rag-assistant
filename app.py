@@ -83,8 +83,8 @@ def batched(iterable, n):
 def rate_limited_embed(
     texts: List[str],
     embedder: OpenAIEmbeddings,
-    batch_size: int = 2,          # very gentle
-    target_rpm: int = 5,          # pace requests (5 requests/min ≈ 12s apart)
+    batch_size: int = 1,          # very gentle
+    target_rpm: int = 2,          # pace requests (2 requests/min ≈ 12s apart)
     max_retries: int = 8
 ):
 
@@ -288,6 +288,7 @@ if st.button("Ask") or user_q.strip():
                 st.write("---")
 else:
     st.info("Type a question above and press **Ask**. Add PDFs to `data/raw/` for better results.")
+
 
 
 
