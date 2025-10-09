@@ -84,7 +84,7 @@ def rate_limited_embed(
     texts: List[str],
     embedder: OpenAIEmbeddings,
     batch_size: int = 1,          # very gentle
-    target_rpm: int = 2,          # pace requests (2 requests/min ≈ 12s apart)
+    target_rpm: int = 1,          # pace requests (2 requests/min ≈ 12s apart)
     max_retries: int = 8
 ):
 
@@ -147,7 +147,12 @@ def build_chroma_index(chunks, index_dir: str):
     ids = [f"doc-{i}" for i in range(len(chunks))]
 
     embedder = make_embedder()
-    embs = rate_limited_embed(texts, embedder, batch_size=24)
+    embs = rate_limited_embed(
+    texts,
+    embedder,
+    batch_size=1,      # one chunk per request
+    target_rpm=1,      # one request per minute (safe)
+    max_retries=4)
 
     # Create (or open) the store *without* an embedding function (we provide embeddings)
     vs = Chroma(collection_name="docs", persist_directory=index_dir)
@@ -288,6 +293,7 @@ if st.button("Ask") or user_q.strip():
                 st.write("---")
 else:
     st.info("Type a question above and press **Ask**. Add PDFs to `data/raw/` for better results.")
+
 
 
 
